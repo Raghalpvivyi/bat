@@ -1,108 +1,183 @@
+import telebot
 import random
 import sqlite3
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-)
+from telebot import types
 
-TOKEN = "8764097317:AAH33c23-SIkuvLjyhVgbaopC2XQQuavTQQ"
+# --- الإعدادات ---
+API_TOKEN = '8764097317:AAH33c23-SIkuvLjyhVgbaopC2XQQuavTQQ'
+DEVELOPER_ID = '8417816240'  # ضع الآيدي الخاص بك هنا
+bot = telebot.TeleBot(API_TOKEN)
 
-# ================= DATABASE =================
-conn = sqlite3.connect("game.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS players (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    points INTEGER DEFAULT 0,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0,
-    games INTEGER DEFAULT 0
-)
-""")
-conn.commit()
-
-# ================= GAME MEMORY =================
-game_data = {}
-
-# ================= RANK SYSTEM =================
-def get_rank(points):
-    if points >= 100:
-        return "👑 ملك البات"
-    elif points >= 50:
-        return "🥇 أسطورة"
-    elif points >= 20:
-        return "🥈 محترف"
-    else:
-        return "🥉 مبتدئ"
-
-# ================= START GAME =================
-async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    member = await context.bot.get_chat_member(chat.id, user.id)
-    if member.status not in ["administrator", "creator"]:
-        await update.message.reply_text("❌ فقط الأدمن يكدر يبدأ اللعبة.")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("🎮 انضمام", callback_data="join_game")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    msg = await update.message.reply_text(
-        "🎮 بدأت لعبة البات!\n⏳ الوقت المتبقي: 30 ثانية\n👥 اللاعبين: 0",
-        reply_markup=reply_markup
-    )
-
-    game_data[chat.id] = {
-        "players": [],
-        "message_id": msg.message_id,
-        "countdown": 30
-    }
-
-    asyncio.create_task(countdown_timer(context, chat.id))
-
-# ================= JOIN BUTTON =================
-async def join_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    chat_id = query.message.chat.id
-
-    await query.answer()
-
-    if chat_id not in game_data:
-        return
-
-    if user.id not in game_data[chat_id]["players"]:
-        game_data[chat_id]["players"].append(user.id)
-
-        cursor.execute("INSERT OR IGNORE INTO players (user_id, username) VALUES (?, ?)",
-                       (user.id, user.first_name))
-        conn.commit()
-
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=game_data[chat_id]["message_id"],
-            text=f"🎮 بدأت لعبة البات!\n⏳ الوقت المتبقي: {game_data[chat_id]['countdown']} ثانية\n👥 اللاعبين: {len(game_data[chat_id]['players'])}",
-            reply_markup=query.message.reply_markup
+# --- إعداد قاعدة البيانات ---
+def init_db():
+    conn = sqlite3.connect('muhaibis.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT,
+            points INTEGER DEFAULT 0,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            rounds INTEGER DEFAULT 0
         )
+    ''')
+    conn.commit()
+    conn.close()
 
-# ================= COUNTDOWN =================
-async def countdown_timer(context, chat_id):
-    while chat_id in game_data and game_data[chat_id]["countdown"] > 0:
-        await asyncio.sleep(1)
-        game_data[chat_id]["countdown"] -= 1
+def update_user_stats(user_id, name, won=False, lost=False):
+    conn = sqlite3.connect('muhaibis.db')
+    cursor = conn.cursor()
+    # التأكد من وجود المستخدم
+    cursor.execute('INSERT OR IGNORE INTO users (user_id, name) VALUES (?, ?)', (user_id, name))
+    
+    if won:
+        cursor.execute('UPDATE users SET points = points + 10, wins = wins + 1, rounds = rounds + 1, name = ? WHERE user_id = ?', (name, user_id))
+    elif lost:
+        cursor.execute('UPDATE users SET losses = losses + 1, rounds = rounds + 1, name = ? WHERE user_id = ?', (name, user_id))
+    
+    conn.commit()
+    conn.close()
 
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
+def get_rank(points):
+    if points >= 500: return "👑 ملك البات"
+    if points >= 150: return "🥇 أسطورة"
+    if points >= 50:  return "🥈 محترف"
+    return "🥉 مبتدئ"
+
+# --- متغيرات اللعبة المؤقتة ---
+games = {} 
+user_to_group = {} 
+
+init_db()
+
+# --- الأوامر ---
+
+@bot.message_handler(commands=['ha'])
+def my_stats(message):
+    user_id = message.from_user.id
+    conn = sqlite3.connect('muhaibis.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT points, wins, losses, rounds FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        points, wins, losses, rounds = row
+        rank = get_rank(points)
+        text = (f"📊 إحصائياتك يا بطل:\n\n"
+                f"👤 الاسم: {message.from_user.first_name}\n"
+                f"🏅 الرتبة: {rank}\n"
+                f"✨ النقاط: {points}\n"
+                f"🏆 عدد الفوز: {wins}\n"
+                f"❌ عدد الخسارة: {losses}\n"
+                f"🔄 جولات لعبتها: {rounds}")
+    else:
+        text = "ما عندك سجل حالياً، العب أول جولة حتى تطلع بياناتك!"
+    bot.reply_to(message, text)
+
+@bot.message_handler(commands=['tob'])
+def top_players(message):
+    conn = sqlite3.connect('muhaibis.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT name, points FROM users ORDER BY points DESC LIMIT 10')
+    rows = cursor.fetchall()
+    conn.close()
+
+    text = "🏆 قائمة أفضل 10 لاعبين (TOP 10):\n\n"
+    for i, row in enumerate(rows, 1):
+        text += f"{i} - {row[0]} » {row[1]} نقطة\n"
+    bot.reply_to(message, text)
+
+# --- منطق اللعبة (معدل لإضافة النقاط) ---
+
+def is_authorized(message):
+    if message.from_user.id == DEVELOPER_ID: return True
+    member = bot.get_chat_member(message.chat.id, message.from_user.id)
+    return member.status in ['administrator', 'creator']
+
+@bot.message_handler(commands=['start_game'])
+def start_cmd(message):
+    if message.chat.type == "private" or not is_authorized(message): return
+    chat_id = message.chat.id
+    games[chat_id] = {'players': [], 'team1': [], 'team2': [], 'phase': 'joining', 'ring_holder': None, 'eliminated': []}
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("انضمام للعبة ✋", callback_data=f"join_{chat_id}"))
+    bot.send_message(chat_id, "🎮 بدأت جولة محيبس جديدة!\nسجل اسمك بالضغط على انضمام.", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('join_'))
+def join_player(call):
+    chat_id = int(call.data.split('_')[1])
+    user = call.from_user
+    if chat_id in games and user.id not in [p['id'] for p in games[chat_id]['players']]:
+        games[chat_id]['players'].append({'id': user.id, 'name': user.first_name})
+        bot.answer_callback_query(call.id, "تم الانضمام!")
+
+@bot.message_handler(commands=['split'])
+def split_teams(message):
+    chat_id = message.chat.id
+    if chat_id not in games or not is_authorized(message): return
+    if len(games[chat_id]['players']) < 2:
+        return bot.reply_to(message, "لازم لاعبين اثنين على الأقل!")
+
+    players = games[chat_id]['players']
+    random.shuffle(players)
+    mid = len(players) // 2
+    games[chat_id]['team1'], games[chat_id]['team2'] = players[:mid], players[mid:]
+    
+    leader1, leader2 = games[chat_id]['team1'][0], games[chat_id]['team2'][0]
+    bot.send_message(chat_id, f"🔵 فريق 1: {leader1['name']} (قائد)\n🔴 فريق 2: {leader2['name']} (قائد)\n\nيا {leader1['name']}، بيت المحبس بالخاص!")
+    
+    user_to_group[leader1['id']] = chat_id
+    markup = types.InlineKeyboardMarkup()
+    for p in games[chat_id]['team1']:
+        markup.add(types.InlineKeyboardButton(p['name'], callback_data=f"hide_{p['id']}"))
+    bot.send_message(leader1['id'], "اختار حامل المحبس:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('hide_'))
+def finalize_hiding(call):
+    holder_id = int(call.data.split('_')[1])
+    group_id = user_to_group.get(call.from_user.id)
+    if not group_id: return
+    games[group_id]['ring_holder'] = holder_id
+    leader2 = games[group_id]['team2'][0]
+    user_to_group[leader2['id']] = group_id
+    bot.send_message(group_id, f"💍 المحبس تبيت! يا {leader2['name']} ابدأ التفتيش بالخاص.")
+    send_guess_menu(leader2['id'], group_id)
+
+def send_guess_menu(leader_id, group_id):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for p in games[group_id]['team1']:
+        if p['id'] not in games[group_id]['eliminated']:
+            markup.add(types.InlineKeyboardButton(f"تفتيش {p['name']}", callback_data=f"guess_{p['id']}"))
+    bot.send_message(leader_id, "منو عنده المحبس؟", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('guess_'))
+def handle_guessing(call):
+    guess_id = int(call.data.split('_')[1])
+    group_id = user_to_group.get(call.from_user.id)
+    if not group_id: return
+
+    game = games[group_id]
+    target = next(p for p in game['team1'] if p['id'] == guess_id)
+    
+    if guess_id == game['ring_holder']:
+        # فوز الفريق الثاني
+        bot.send_message(group_id, f"🔊 {call.from_user.first_name} صاح: {target['name']} افتحهههه! 🔥💍")
+        bot.send_message(group_id, "🎉 الفريق الثاني فاز! كل واحد حصل +10 نقاط.")
+        
+        for p in game['team2']: update_user_stats(p['id'], p['name'], won=True)
+        for p in game['team1']: update_user_stats(p['id'], p['name'], lost=True)
+        
+        del games[group_id]
+        bot.edit_message_text("مبروك الفوز!", call.from_user.id, call.message.message_id)
+    else:
+        game['eliminated'].append(guess_id)
+        bot.send_message(group_id, f"🔊 {call.from_user.first_name} كَال لـ {target['name']}: طاااااااااالع! ✋")
+        bot.edit_message_text("طلع فارغ، كمل:", call.from_user.id, call.message.message_id)
+        send_guess_menu(call.from_user.id, group_id)
+
+bot.infinity_polling()
                 message_id=game_data[chat_id]["message_id"],
                 text=f"🎮 بدأت لعبة البات!\n⏳ الوقت المتبقي: {game_data[chat_id]['countdown']} ثانية\n👥 اللاعبين: {len(game_data[chat_id]['players'])}",
                 reply_markup=InlineKeyboardMarkup(
